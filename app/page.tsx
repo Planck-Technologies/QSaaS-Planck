@@ -1,0 +1,422 @@
+"use client"
+
+import Link from "next/link"
+import Image from "next/image"
+import { Button } from "@/components/ui/button"
+import { ArrowRight, Zap, BarChart3, GitBranch, Menu, X } from "lucide-react"
+import { PricingSection } from "@/components/pricing-section"
+import { HeroAnimation } from "@/components/hero-animation"
+import { FAQSection } from "@/components/faq-section"
+import { TitleAnimation } from "@/components/title-animation"
+import { LanguageSelector } from "@/components/language-selector"
+import { useLanguage } from "@/contexts/language-context"
+import React from "react"
+import { Footer } from "@/components/footer"
+import { useTheme } from "next-themes"
+
+// SECURITY: Supabase auth imports removed
+
+export default function LandingPage() {
+  const [scrollRotation, setScrollRotation] = React.useState(0)
+  const [glowOpacity, setGlowOpacity] = React.useState(1)
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
+  const [videoModalOpen, setVideoModalOpen] = React.useState(false)
+  const { t } = useLanguage()
+  const heroRef = React.useRef<HTMLElement>(null)
+  const { setTheme } = useTheme()
+
+  React.useEffect(() => {
+    setTheme("light")
+
+    const checkSession = async () => {
+      // Skip Supabase check in preview/development environments where it may not be available
+      if (typeof window !== "undefined" && window.location.hostname.includes("vusercontent.net")) {
+        return
+      }
+
+      try {
+        const supabase = createBrowserClient()
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession()
+
+        if (error) {
+          return
+        }
+
+        if (session) {
+          sessionStorage.setItem("planck_user_id", session.user.id)
+          sessionStorage.setItem("planck_user_email", session.user.email || "")
+        }
+      } catch (error) {
+        // Silently handle any connection errors - not critical for landing page
+        }
+    }
+
+    checkSession()
+
+    sessionStorage.setItem("planck_nav_source", "landing")
+  }, [setTheme])
+
+  return (
+    <div className="min-h-screen bg-background overflow-x-hidden">
+      <header className="fixed top-2 left-2 right-2 md:top-3 md:left-3 md:right-3 z-50 bg-background/95 backdrop-blur-sm border-b border-border rounded-lg shadow-lg">
+        <div className="mx-auto px-3 md:px-4 lg:px-8 py-3 md:py-4 opacity-[0.92]">
+          <div className="hidden md:flex justify-between items-center opacity-[0.92]">
+            <Image
+              src="/images/design-mode/Planck%20Logotype%20no%20bg(2).png"
+              alt="Planck Logo"
+              width={140}
+              height={45}
+              className="h-10 w-auto"
+            />
+            <nav className="flex gap-8 items-center justify-center">
+              <a href="#features" className="text-foreground hover:text-primary transition">
+                Features
+              </a>
+              <a href="#pricing" className="text-foreground hover:text-primary transition">
+                Pricing
+              </a>
+              <a href="#faq" className="text-foreground hover:text-primary transition">
+                FAQs
+              </a>
+            </nav>
+            <Link href="/auth/login">
+              <Button className="bg-primary hover:bg-primary/90 text-lg transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 px-6 py-2.5">
+                Access
+              </Button>
+            </Link>
+          </div>
+
+          <div className="md:hidden flex justify-between items-center gap-2">
+            <Image
+              src="/images/design-mode/Planck%20Logotype%20no%20bg(2).png"
+              alt="Planck Logo"
+              width={90}
+              height={29}
+              className="h-6 w-auto flex-shrink-0"
+            />
+            <button
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="p-2 hover:bg-accent rounded-lg transition-colors flex-shrink-0"
+              aria-label="Toggle menu"
+            >
+              {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
+          </div>
+        </div>
+
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-border bg-background/95 backdrop-blur-sm">
+            <div className="px-4 py-6 space-y-4">
+              <a
+                href="#features"
+                className="block text-center py-2 text-foreground hover:text-primary transition"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Features
+              </a>
+              <a
+                href="#pricing"
+                className="block text-center py-2 text-foreground hover:text-primary transition"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Pricing
+              </a>
+              <a
+                href="#faq"
+                className="block text-center py-2 text-foreground hover:text-primary transition"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                FAQs
+              </a>
+              <div className="flex justify-center pt-2">
+                <LanguageSelector />
+              </div>
+              <div className="pt-4 border-t border-border">
+                <Link href="/auth/login">
+                  <Button
+                    className="w-full bg-primary hover:bg-primary/90 transition-transform duration-300 hover:scale-105"
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    Access
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
+      </header>
+
+      <div className="pt-[80px] md:pt-24 overflow-x-hidden bg-background">
+        <section
+          ref={heroRef}
+          data-hn-hero
+          className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 md:py-[380px] md:pt-[200px] md:pb-[300px]"
+          style={{ "--scroll-rotation": `${scrollRotation}deg`, "--glow-opacity": glowOpacity } as React.CSSProperties}
+        >
+          <div className="absolute inset-0 -z-10">
+            <HeroAnimation />
+          </div>
+          <div className="absolute inset-0 -z-10">
+            <TitleAnimation />
+          </div>
+
+          <div className="flex flex-col items-center gap-12 relative z-10">
+            <div className="hn-floating-cat absolute inset-0 pointer-events-none">
+              <Image
+                src="/images/schrodinger-20planck-20landing.png"
+                alt=""
+                width={360}
+                height={360}
+                className="w-[240px] h-[240px] sm:w-[288px] sm:h-[288px] md:w-[360px] md:h-[360px] object-contain"
+              />
+            </div>
+
+            <div className="text-center space-y-6">
+              <h1
+                className="hn-slogan-wrap text-5xl md:text-7xl font-bold text-foreground text-balance relative"
+                style={{ "--scroll-rotation": `${scrollRotation}deg` } as React.CSSProperties}
+              >
+                <span>
+                  Effortless <span className="text-primary">Quantum Computing</span>
+                </span>
+              </h1>
+              <p className="text-xl text-muted-foreground max-w-2xl mx-auto text-balance">
+                Simulate and optimize your data models with quantum, AI-enhanced.
+              </p>
+              <div className="flex gap-4 justify-center flex-wrap pt-4">
+                <Link href="/auth/login">
+                  <Button
+                    size="lg"
+                    className="hn-cta bg-primary hover:bg-primary/90 text-lg px-8 transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 shadow-xl"
+                  >
+                    Access <ArrowRight className="ml-2" size={20} />
+                  </Button>
+                </Link>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="text-lg px-8 hover:shadow-lg transition-all duration-300 hover:scale-105 bg-secondary shadow-lg"
+                  onClick={() => setVideoModalOpen(true)}
+                >
+                  Watch Video
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 text-center relative z-10">
+          <div className="inline-block">
+            <p className="text-2xl md:text-3xl lg:text-4xl font-bold text-[#578e7e]">
+              Up to 68,719,476,736 different states
+            </p>
+          </div>
+        </section>
+
+        <section id="features" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 my-0 relative z-10">
+          <h2 className="text-4xl font-bold text-foreground mb-12 text-center relative z-10">Features</h2>
+          <div className="grid md:grid-cols-3 gap-8 relative z-10">
+            {[
+              {
+                icon: Zap,
+                title: "High Performance",
+                description: "53x faster computing executions than market standards",
+              },
+              {
+                icon: BarChart3,
+                title: "Powerful Analytics",
+                description: "Monitor, analyze and understand your model",
+              },
+              {
+                icon: GitBranch,
+                title: "Hybrid Approach",
+                description: "Toggle auto/manual configurations. Customize your workflow",
+              },
+            ].map((feature, i) => {
+              const Icon = feature.icon
+              return (
+                <div
+                  key={i}
+                  className="border border-border p-8 hover:shadow-lg transition hover:shadow-xl hover:scale-105 duration-300 shadow-lg rounded-lg bg-secondary"
+                >
+                  <Icon className="text-primary mb-4" size={32} />
+                  <h3 className="text-xl font-semibold text-foreground mb-2">{feature.title}</h3>
+                  <p className="text-muted-foreground">{feature.description}</p>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 z-10">
+          <div className="flex justify-center">
+            <Image
+              src="/images/computing-20evolution-20no-20slogan.png"
+              alt="Computing Evolution"
+              width={600}
+              height={180}
+              className="rounded-lg opacity-60"
+            />
+          </div>
+        </section>
+
+        <div id="pricing" className="relative z-10">
+          <PricingSection />
+        </div>
+
+        <div className="relative z-0 pointer-events-none h-0">
+          <div className="absolute left-0 right-0 top-[-200px]">
+            <div className="relative max-w-7xl mx-auto">
+              <div className="absolute -right-4 sm:-right-8 top-36 sm:top-20 w-[228px] h-[228px] sm:w-[325px] sm:h-[325px] lg:w-[468px] lg:h-[468px] opacity-15">
+                <Image
+                  src="/images/normalization-20planck-20landing.png"
+                  alt=""
+                  width={468}
+                  height={468}
+                  className="w-full h-full object-contain"
+                  style={{ transform: "rotate(23deg)" }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="relative z-10">
+          <FAQSection />
+        </div>
+
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center relative z-10">
+          <div className="absolute -left-8 sm:-left-16 bottom-12 w-[195px] h-[195px] sm:w-[260px] sm:h-[260px] lg:w-[364px] lg:h-[364px] opacity-20 pointer-events-none z-0">
+            <Image
+              src="/images/graph-20planck-20landing.png"
+              alt=""
+              width={364}
+              height={364}
+              className="w-full h-full object-contain"
+              style={{ transform: "rotate(-12deg)" }}
+            />
+          </div>
+
+          <h2 className="text-4xl font-bold text-foreground mb-6 relative z-10">Welcome to the new computing era</h2>
+
+          <Link href="/auth/login">
+            <Button
+              size="lg"
+              className="bg-primary hover:bg-primary/90 text-lg px-8 transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 shadow-lg relative z-10"
+            >
+              Try It Now <ArrowRight className="ml-2" />
+            </Button>
+          </Link>
+        </section>
+
+        <Footer />
+      </div>
+
+      {videoModalOpen && (
+        <div
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+          onClick={() => setVideoModalOpen(false)}
+        >
+          <div
+            className="relative w-full max-w-5xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setVideoModalOpen(false)}
+              className="absolute top-4 right-4 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2 transition-colors"
+              aria-label="Close video"
+            >
+              <X size={24} />
+            </button>
+            <video
+              controls
+              autoPlay
+              className="w-full h-full"
+              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/Animaci%C3%B3n_de_Micro_circuito_Cu%C3%A1ntico%20Planck-RU4qdkJ2pGP2flehxFGXePn7y5i1Qm.mp4"
+            >
+              Your browser does not support the video tag.
+            </video>
+          </div>
+        </div>
+      )}
+
+      <style jsx>{`
+        [data-hn-hero] .hn-slogan-wrap {
+          position: relative;
+          display: inline-block;
+        }
+
+        /* Enhanced floating cat animation with smoother fade in/out and 150% larger size */
+        .hn-floating-cat {
+          animation: hn-float-cat 15s ease-in-out infinite;
+        }
+
+        @keyframes hn-float-cat {
+          0% {
+            transform: translate(-20%, -20%) scale(0) rotate(0deg);
+            opacity: 0;
+          }
+          8% {
+            transform: translate(20%, 10%) scale(1) rotate(20deg);
+            opacity: 0.5;
+          }
+          20% {
+            transform: translate(80%, 20%) scale(1.1) rotate(45deg);
+            opacity: 0.6;
+          }
+          28% {
+            opacity: 0;
+          }
+          35% {
+            transform: translate(10%, 60%) scale(0) rotate(-30deg);
+            opacity: 0;
+          }
+          43% {
+            transform: translate(30%, 75%) scale(1) rotate(-45deg);
+            opacity: 0.5;
+          }
+          55% {
+            transform: translate(70%, 80%) scale(0.9) rotate(0deg);
+            opacity: 0.55;
+          }
+          63% {
+            opacity: 0;
+          }
+          70% {
+            transform: translate(90%, 30%) scale(0) rotate(90deg);
+            opacity: 0;
+          }
+          78% {
+            transform: translate(85%, 50%) scale(1.2) rotate(60deg);
+            opacity: 0.6;
+          }
+          90% {
+            transform: translate(50%, 40%) scale(0.8) rotate(-20deg);
+            opacity: 0.5;
+          }
+          98% {
+            opacity: 0;
+          }
+          100% {
+            transform: translate(-20%, -20%) scale(0) rotate(0deg);
+            opacity: 0;
+          }
+        }
+      `}</style>
+
+      <style jsx global>{`
+        @media (prefers-reduced-motion: reduce) {
+          /* Disable shimmer animation overlay for reduced motion */
+          .hn-shimmer-text::before {
+            animation: none;
+            display: none;
+          }
+        }
+      `}</style>
+    </div>
+  )
+}
+

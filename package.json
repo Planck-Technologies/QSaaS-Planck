@@ -1,0 +1,25 @@
+{
+  "name": "planck-saas-toy",
+  "version": "0.1.0",
+  "description": "Demo Quantum SaaS Platform - Toy Model",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": "18.x || 20.x"
+  },
+  "author": "Planck Technologies",
+  "license": "MIT",
+  "note": "This is a demo toy SaaS. Full dependency list has been removed for security. To use this as a base, you must configure your own backend, authentication, and dependencies."
+}
