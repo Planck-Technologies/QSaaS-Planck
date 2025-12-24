@@ -1,4 +1,4 @@
-# Planck-QSaaS — Short Overview
+# Planck-QSaaS
 
 Effortless Quantum Computing
 
