@@ -102,4 +102,3 @@ export function verifyCode(enteredCode: string, email: string): boolean {
     return false
   }
 }
-

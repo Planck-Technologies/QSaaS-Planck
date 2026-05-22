@@ -99,4 +99,3 @@ export function AnimatedBackground() {
 
   return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 }
-

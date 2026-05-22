@@ -8,12 +8,28 @@ import { Label } from "@/components/ui/label"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
-import { Eye, EyeOff } from "lucide-react"
+import { Eye, EyeOff, UserRound } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import Image from "next/image"
 import { LoadingSpinner } from "@/components/loading-spinner"
 
-// SECURITY: Supabase auth imports removed
+export const dynamic = 'force-dynamic'
+
+function getErrorMessage(err: unknown): string {
+  if (!err) return "An error occurred. Please try again."
+  if (typeof err === "string" && err && err !== "{}") return err
+  if (typeof err === "object") {
+    const obj = err as Record<string, unknown>
+    if (typeof obj.status === "number") {
+      if (obj.status === 429) return "Too many requests. Please wait a moment and try again."
+      if (obj.status === 400 || obj.status === 401) return "Invalid email or password."
+      if (obj.status >= 500) return "Server error. Please try again shortly."
+    }
+    if (typeof obj.message === "string" && obj.message && obj.message !== "{}") return obj.message
+  }
+  if (err instanceof Error && err.message && err.message !== "{}") return err.message
+  return "An error occurred. Please try again."
+}
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -21,49 +37,45 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [isGuestLoading, setIsGuestLoading] = useState(false)
   const router = useRouter()
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
+
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail) { setError("Email is required."); return }
+    if (!password) { setError("Password is required."); return }
+
     setIsLoading(true)
-
     try {
-      const supabase = createClient()
-
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmedEmail, password }),
       })
 
-      if (authError) throw authError
+      const data = await response.json()
 
-      // Check if profile exists (but don't delete if it doesn't)
-      if (authData.user) {
-        const { data: profileData, error: profileError } = await supabase
-          .from("profiles")
-          .select("id")
-          .eq("id", authData.user.id)
-          .single()
-
-        // If no profile exists, sign out but don't delete the account
-        if (!profileData || profileError) {
-          await supabase.auth.signOut()
-          throw new Error("Account not properly registered. Please sign up first.")
-        }
+      if (!response.ok) {
+        setError(data.error || "Login failed")
+        return
       }
 
-      // Set browser cookie for session persistence (30 days)
-      document.cookie = `planck_session=active; max-age=${30 * 24 * 60 * 60}; path=/; SameSite=Strict`
-
       sessionStorage.setItem("planck_nav_source", "auth")
-
       router.push("/qsaas/dashboard")
-    } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred")
+    } catch (err: unknown) {
+      setError(getErrorMessage(err))
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleGuest = () => {
+    setIsGuestLoading(true)
+    document.cookie = `planck_guest=true; max-age=${2 * 60 * 60}; path=/; SameSite=Strict`
+    router.push("/qsaas/dashboard")
   }
 
   return (
@@ -78,9 +90,7 @@ export default function LoginPage() {
             className="object-contain"
           />
         </Link>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-        </div>
+        <ThemeToggle />
       </div>
 
       <Card className="border-border">
@@ -89,13 +99,14 @@ export default function LoginPage() {
           <CardDescription>Sign in to your Planck account</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleLogin} className="space-y-6">
+          <form onSubmit={handleLogin} className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
                 type="email"
                 placeholder="your@email.com"
+                autoComplete="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -109,6 +120,7 @@ export default function LoginPage() {
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -118,31 +130,63 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <Button type="submit" className="w-full bg-primary hover:bg-primary/90" disabled={isLoading}>
+
+            {error && (
+              <p className="text-sm text-destructive" role="alert">{error}</p>
+            )}
+
+            <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? (
-                <div className="flex items-center gap-2">
+                <span className="flex items-center gap-2">
                   <LoadingSpinner size="sm" />
                   Signing in...
-                </div>
-              ) : (
-                "Sign In"
-              )}
+                </span>
+              ) : "Sign In"}
             </Button>
           </form>
 
-          <div className="mt-6 text-center text-sm">
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-card px-2 text-muted-foreground">or</span>
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={handleGuest}
+            disabled={isGuestLoading}
+          >
+            {isGuestLoading ? (
+              <span className="flex items-center gap-2">
+                <LoadingSpinner size="sm" />
+                Entering...
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <UserRound size={16} />
+                Continue as Guest
+              </span>
+            )}
+          </Button>
+
+          <p className="mt-6 text-center text-sm">
             {"Don't have an account? "}
             <Link href="/auth/sign-up" className="text-primary hover:underline">
               Sign up
             </Link>
-          </div>
+          </p>
         </CardContent>
       </Card>
     </div>

@@ -32,6 +32,7 @@ export const metadata: Metadata = {
     description: "Effortless Quantum Computing Platform",
     images: ["/planck-logo.jpg"],
   },
+    generator: 'v0.app'
 }
 
 export default function RootLayout({
@@ -49,4 +50,3 @@ export default function RootLayout({
     </html>
   )
 }
-

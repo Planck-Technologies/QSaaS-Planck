@@ -5,102 +5,80 @@ import type React from "react"
 import { useRouter, usePathname } from "next/navigation"
 import { MainLayout } from "@/components/layout/main-layout"
 import { QuantumLoadingScreen } from "@/components/quantum-loading-screen"
+import { GuestBanner } from "@/components/guest-banner"
+import { UIPreferencesProvider } from "@/contexts/ui-preferences-context"
+import { SyntheticModeProvider } from "@/contexts/synthetic-mode-context"
+import { DigitalTwinModeProvider } from "@/contexts/digital-twin-mode-context"
+import { ModeStatusBanner } from "@/components/layout/mode-status-banner"
 import { useTheme } from "next-themes"
 
-// SECURITY: Supabase client imports removed
-
-export default function QsaasLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export default function QsaasLayout({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
   const pathname = usePathname()
   const { setTheme } = useTheme()
 
   useEffect(() => {
-    const initializeUserSession = async () => {
+    const init = async () => {
       try {
-        const supabase = createBrowserClient()
+        // Verify session via server endpoint.
+        // For guests, the API returns a guest stub so we never 401.
+        const response = await fetch("/api/request-utils", {
+          method: "GET",
+          credentials: "include",
+        }).catch(() => null)
 
-        const {
-          data: { session },
-          error: sessionError,
-        } = await supabase.auth.getSession()
-
-        if (sessionError) {
-          throw sessionError
-        }
-
-        if (!session) {
+        if (!response || !response.ok) {
           router.push("/auth/login")
           return
         }
 
-        const {
-          data: { user },
-          error: userError,
-        } = await supabase.auth.getUser()
-
-        if (userError || !user) {
-          router.push("/auth/login")
-          return
-        }
-
-        const { data: profile, error: profileError } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", user.id)
-          .single()
-
-        if (!profileError && profile) {
-          if (profile.theme_preference) {
-            setTheme(profile.theme_preference)
+        try {
+          const data = await response.json()
+          
+          if (data?.user) {
+            const user = data.user
+            sessionStorage.setItem("planck_user_id", user.id || "")
+            sessionStorage.setItem("planck_user_email", user.email || "")
+            sessionStorage.setItem("planck_user_name", user.full_name || "")
+            sessionStorage.setItem("planck_user_org", user.organization || "")
+            sessionStorage.setItem("planck_user_phone", user.phone || "")
+            sessionStorage.setItem("planck_user_country", user.country || "")
+            sessionStorage.setItem("planck_user_occupation", user.occupation || "")
+            sessionStorage.setItem("planck_is_guest", String(!!data.guest))
+            
+            if (user.theme_preference) {
+              setTheme(user.theme_preference)
+            }
           }
-
-          sessionStorage.setItem("planck_user_id", user.id)
-          sessionStorage.setItem("planck_user_email", user.email || "")
-          sessionStorage.setItem("planck_user_name", profile.name || "")
-          sessionStorage.setItem("planck_user_org", profile.org || "")
-          sessionStorage.setItem("planck_user_country", profile.country || "")
-        }
-
-        const { data: recentLogs } = await supabase
-          .from("execution_logs")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(10)
-
-        if (recentLogs) {
-          sessionStorage.setItem("planck_recent_circuits", JSON.stringify(recentLogs))
+        } catch (parseError) {
+          console.error("Failed to parse user data:", parseError)
         }
 
         sessionStorage.setItem("planck_nav_source", "qsaas")
-
-        const minLoadingTime = 2000
-        const startTime = Date.now()
-        const elapsedTime = Date.now() - startTime
-        const remainingTime = Math.max(0, minLoadingTime - elapsedTime)
-
-        setTimeout(() => {
-          setIsLoading(false)
-        }, remainingTime)
+        setTimeout(() => setIsLoading(false), 1200)
       } catch (error) {
-        setTimeout(() => {
-          setIsLoading(false)
-        }, 2000)
+        console.error("Layout init error:", error)
+        router.push("/auth/login")
       }
     }
 
-    initializeUserSession()
+    init()
   }, [router, pathname, setTheme])
 
-  if (isLoading) {
-    return <QuantumLoadingScreen />
-  }
+  if (isLoading) return <QuantumLoadingScreen />
 
-  return <MainLayout>{children}</MainLayout>
+  return (
+    <UIPreferencesProvider>
+      <SyntheticModeProvider>
+        <DigitalTwinModeProvider>
+          <ModeStatusBanner />
+          <MainLayout>
+            <GuestBanner />
+            {children}
+          </MainLayout>
+        </DigitalTwinModeProvider>
+      </SyntheticModeProvider>
+    </UIPreferencesProvider>
+  )
 }
-

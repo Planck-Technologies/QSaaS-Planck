@@ -83,6 +83,7 @@ export function DatabaseUploader({ onDataUpload, preSelectedAlgorithm, onAlgorit
 
           onDataUpload?.({ qubits, gates, depth: gates.length })
         } catch (error) {
+          console.error("[v0] Failed to parse uploaded file:", error)
           setParseError("Uploaded file can not be parsed, consider adapting it.")
           setUploadedFile(null)
         }
@@ -195,4 +196,3 @@ export function DatabaseUploader({ onDataUpload, preSelectedAlgorithm, onAlgorit
     </Card>
   )
 }
-

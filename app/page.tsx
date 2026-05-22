@@ -5,16 +5,13 @@ import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { ArrowRight, Zap, BarChart3, GitBranch, Menu, X } from "lucide-react"
 import { PricingSection } from "@/components/pricing-section"
-import { HeroAnimation } from "@/components/hero-animation"
+import { HeroBackground } from "@/components/hero-background"
 import { FAQSection } from "@/components/faq-section"
-import { TitleAnimation } from "@/components/title-animation"
 import { LanguageSelector } from "@/components/language-selector"
 import { useLanguage } from "@/contexts/language-context"
 import React from "react"
 import { Footer } from "@/components/footer"
 import { useTheme } from "next-themes"
-
-// SECURITY: Supabase auth imports removed
 
 export default function LandingPage() {
   const [scrollRotation, setScrollRotation] = React.useState(0)
@@ -27,35 +24,6 @@ export default function LandingPage() {
 
   React.useEffect(() => {
     setTheme("light")
-
-    const checkSession = async () => {
-      // Skip Supabase check in preview/development environments where it may not be available
-      if (typeof window !== "undefined" && window.location.hostname.includes("vusercontent.net")) {
-        return
-      }
-
-      try {
-        const supabase = createBrowserClient()
-        const {
-          data: { session },
-          error,
-        } = await supabase.auth.getSession()
-
-        if (error) {
-          return
-        }
-
-        if (session) {
-          sessionStorage.setItem("planck_user_id", session.user.id)
-          sessionStorage.setItem("planck_user_email", session.user.email || "")
-        }
-      } catch (error) {
-        // Silently handle any connection errors - not critical for landing page
-        }
-    }
-
-    checkSession()
-
     sessionStorage.setItem("planck_nav_source", "landing")
   }, [setTheme])
 
@@ -67,9 +35,9 @@ export default function LandingPage() {
             <Image
               src="/images/design-mode/Planck%20Logotype%20no%20bg(2).png"
               alt="Planck Logo"
-              width={140}
-              height={45}
-              className="h-10 w-auto"
+              width={110}
+              height={35}
+              className="h-8 w-auto object-contain"
             />
             <nav className="flex gap-8 items-center justify-center">
               <a href="#features" className="text-foreground hover:text-primary transition">
@@ -82,28 +50,38 @@ export default function LandingPage() {
                 FAQs
               </a>
             </nav>
-            <Link href="/auth/login">
-              <Button className="bg-primary hover:bg-primary/90 text-lg transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 px-6 py-2.5">
-                Access
-              </Button>
-            </Link>
+            <div className="flex items-center gap-4">
+              <LanguageSelector />
+              <Link href="/auth/login">
+                <Button className="bg-primary hover:bg-primary/90 text-lg transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 px-6 py-2.5">
+                  Platform
+                </Button>
+              </Link>
+            </div>
           </div>
 
           <div className="md:hidden flex justify-between items-center gap-2">
             <Image
               src="/images/design-mode/Planck%20Logotype%20no%20bg(2).png"
               alt="Planck Logo"
-              width={90}
-              height={29}
-              className="h-6 w-auto flex-shrink-0"
+              width={80}
+              height={26}
+              className="h-6 w-auto object-contain flex-shrink-0"
             />
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 hover:bg-accent rounded-lg transition-colors flex-shrink-0"
-              aria-label="Toggle menu"
-            >
-              {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
+            <div className="flex items-center gap-2">
+              <Link href="/auth/login">
+                <Button size="sm" className="bg-primary hover:bg-primary/90 text-sm px-3 py-1.5">
+                  Platform
+                </Button>
+              </Link>
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="p-2 hover:bg-accent rounded-lg transition-colors flex-shrink-0"
+                aria-label="Toggle menu"
+              >
+                {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -134,87 +112,99 @@ export default function LandingPage() {
               <div className="flex justify-center pt-2">
                 <LanguageSelector />
               </div>
-              <div className="pt-4 border-t border-border">
-                <Link href="/auth/login">
-                  <Button
-                    className="w-full bg-primary hover:bg-primary/90 transition-transform duration-300 hover:scale-105"
-                    onClick={() => setMobileMenuOpen(false)}
-                  >
-                    Access
-                  </Button>
-                </Link>
-              </div>
             </div>
           </div>
         )}
       </header>
 
       <div className="pt-[80px] md:pt-24 overflow-x-hidden bg-background">
-        <section
-          ref={heroRef}
-          data-hn-hero
-          className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 md:py-[380px] md:pt-[200px] md:pb-[300px]"
-          style={{ "--scroll-rotation": `${scrollRotation}deg`, "--glow-opacity": glowOpacity } as React.CSSProperties}
-        >
-          <div className="absolute inset-0 -z-10">
-            <HeroAnimation />
+        {/* ── Hero: full-viewport-width canvas behind constrained text ── */}
+        <div className="relative overflow-hidden" style={{ minHeight: "clamp(480px, 72vh, 880px)" }}>
+          {/* Canvas fills full viewport width — NOT constrained to max-w-7xl */}
+          <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+            <HeroBackground />
           </div>
-          <div className="absolute inset-0 -z-10">
-            <TitleAnimation />
-          </div>
-
-          <div className="flex flex-col items-center gap-12 relative z-10">
-            <div className="hn-floating-cat absolute inset-0 pointer-events-none">
-              <Image
-                src="/images/schrodinger-20planck-20landing.png"
-                alt=""
-                width={360}
-                height={360}
-                className="w-[240px] h-[240px] sm:w-[288px] sm:h-[288px] md:w-[360px] md:h-[360px] object-contain"
-              />
-            </div>
-
-            <div className="text-center space-y-6">
-              <h1
-                className="hn-slogan-wrap text-5xl md:text-7xl font-bold text-foreground text-balance relative"
-                style={{ "--scroll-rotation": `${scrollRotation}deg` } as React.CSSProperties}
-              >
-                <span>
-                  Effortless <span className="text-primary">Quantum Computing</span>
-                </span>
-              </h1>
-              <p className="text-xl text-muted-foreground max-w-2xl mx-auto text-balance">
-                Simulate and optimize your data models with quantum, AI-enhanced.
-              </p>
-              <div className="flex gap-4 justify-center flex-wrap pt-4">
-                <Link href="/auth/login">
+          <section
+            ref={heroRef}
+            data-hn-hero
+            className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 md:pt-[200px] md:pb-[300px] z-10"
+            style={{ "--scroll-rotation": `${scrollRotation}deg`, "--glow-opacity": glowOpacity } as React.CSSProperties}
+          >
+            <div className="flex flex-col items-center gap-12">
+              <div className="text-center space-y-6">
+                <h1
+                  className="hn-slogan-wrap text-5xl md:text-7xl font-bold text-foreground text-balance relative"
+                  style={{ "--scroll-rotation": `${scrollRotation}deg` } as React.CSSProperties}
+                >
+                  <span>
+                    Quantum <span className="text-primary">Digital Twins</span>
+                  </span>
+                </h1>
+                <p className="text-xl text-muted-foreground max-w-2xl mx-auto text-balance">
+                  Simulate and optimize your data models with quantum, AI-enhanced.
+                </p>
+                <div className="flex gap-4 justify-center flex-wrap pt-4">
+                  <Link href="/auth/login">
+                    <Button
+                      size="lg"
+                      className="hn-cta bg-primary hover:bg-primary/90 text-lg px-8 transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 shadow-xl"
+                    >
+                      Platform <ArrowRight className="ml-2" size={20} />
+                    </Button>
+                  </Link>
                   <Button
                     size="lg"
-                    className="hn-cta bg-primary hover:bg-primary/90 text-lg px-8 transition-transform duration-300 hover:scale-105 hover:shadow-xl shadow-primary/30 shadow-xl"
+                    variant="outline"
+                    className="text-lg px-8 hover:shadow-lg transition-all duration-300 hover:scale-105 bg-secondary shadow-lg"
+                    onClick={() => setVideoModalOpen(true)}
                   >
-                    Access <ArrowRight className="ml-2" size={20} />
+                    Watch Video
                   </Button>
-                </Link>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  className="text-lg px-8 hover:shadow-lg transition-all duration-300 hover:scale-105 bg-secondary shadow-lg"
-                  onClick={() => setVideoModalOpen(true)}
-                >
-                  Watch Video
-                </Button>
+                </div>
               </div>
+            </div>
+          </section>
+        </div>
+
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 relative z-10">
+          <div className="relative overflow-hidden">
+            {/* Left gradient fade */}
+            <div className="absolute left-0 top-0 bottom-0 w-32 bg-gradient-to-r from-background to-transparent z-10 pointer-events-none" />
+            {/* Right gradient fade */}
+            <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-background to-transparent z-10 pointer-events-none" />
+
+            <div className="flex animate-scroll-carousel gap-8 whitespace-nowrap">
+              {[
+                "Drug Discovery & Molecular Simulation",
+                "Machine Learning",
+                "Financial Portfolios",
+                "Cryptography & Communications",
+                "Supply Chain & Logistics",
+                "Materials Science & Chemistry",
+                "Climate & Environment",
+                "Genomics",
+                // Duplicate for seamless loop
+                "Drug Discovery & Molecular Simulation",
+                "Machine Learning",
+                "Financial Portfolios",
+                "Cryptography & Communications",
+                "Supply Chain & Logistics",
+                "Materials Science & Chemistry",
+                "Climate & Environment",
+                "Genomics",
+              ].map((vertical, i) => (
+                <div
+                  key={i}
+                  className="inline-flex items-center justify-center px-6 py-3 bg-primary/10 border border-primary/20 rounded-full text-primary font-medium text-sm md:text-base"
+                >
+                  {vertical}
+                </div>
+              ))}
             </div>
           </div>
         </section>
 
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 text-center relative z-10">
-          <div className="inline-block">
-            <p className="text-2xl md:text-3xl lg:text-4xl font-bold text-[#578e7e]">
-              Up to 68,719,476,736 different states
-            </p>
-          </div>
-        </section>
+
 
         <section id="features" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 my-0 relative z-10">
           <h2 className="text-4xl font-bold text-foreground mb-12 text-center relative z-10">Features</h2>
@@ -233,7 +223,7 @@ export default function LandingPage() {
               {
                 icon: GitBranch,
                 title: "Hybrid Approach",
-                description: "Toggle auto/manual configurations. Customize your workflow",
+                description: "Toggle auto/manual configurations. Make your own workflow",
               },
             ].map((feature, i) => {
               const Icon = feature.icon
@@ -259,6 +249,7 @@ export default function LandingPage() {
               width={600}
               height={180}
               className="rounded-lg opacity-60"
+              style={{ width: "100%", height: "auto", maxWidth: 600 }}
             />
           </div>
         </section>
@@ -348,63 +339,6 @@ export default function LandingPage() {
           position: relative;
           display: inline-block;
         }
-
-        /* Enhanced floating cat animation with smoother fade in/out and 150% larger size */
-        .hn-floating-cat {
-          animation: hn-float-cat 15s ease-in-out infinite;
-        }
-
-        @keyframes hn-float-cat {
-          0% {
-            transform: translate(-20%, -20%) scale(0) rotate(0deg);
-            opacity: 0;
-          }
-          8% {
-            transform: translate(20%, 10%) scale(1) rotate(20deg);
-            opacity: 0.5;
-          }
-          20% {
-            transform: translate(80%, 20%) scale(1.1) rotate(45deg);
-            opacity: 0.6;
-          }
-          28% {
-            opacity: 0;
-          }
-          35% {
-            transform: translate(10%, 60%) scale(0) rotate(-30deg);
-            opacity: 0;
-          }
-          43% {
-            transform: translate(30%, 75%) scale(1) rotate(-45deg);
-            opacity: 0.5;
-          }
-          55% {
-            transform: translate(70%, 80%) scale(0.9) rotate(0deg);
-            opacity: 0.55;
-          }
-          63% {
-            opacity: 0;
-          }
-          70% {
-            transform: translate(90%, 30%) scale(0) rotate(90deg);
-            opacity: 0;
-          }
-          78% {
-            transform: translate(85%, 50%) scale(1.2) rotate(60deg);
-            opacity: 0.6;
-          }
-          90% {
-            transform: translate(50%, 40%) scale(0.8) rotate(-20deg);
-            opacity: 0.5;
-          }
-          98% {
-            opacity: 0;
-          }
-          100% {
-            transform: translate(-20%, -20%) scale(0) rotate(0deg);
-            opacity: 0;
-          }
-        }
       `}</style>
 
       <style jsx global>{`
@@ -415,8 +349,25 @@ export default function LandingPage() {
             display: none;
           }
         }
+
+        /* Updated carousel scroll animation from 25s to 15s for faster speed */
+        @keyframes scroll-carousel {
+          0% {
+            transform: translateX(0);
+          }
+          100% {
+            transform: translateX(-50%);
+          }
+        }
+
+        .animate-scroll-carousel {
+          animation: scroll-carousel 15s linear infinite;
+        }
+
+        .animate-scroll-carousel:hover {
+          animation-play-state: paused;
+        }
       `}</style>
     </div>
   )
 }
-

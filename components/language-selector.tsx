@@ -20,4 +20,3 @@ export function LanguageSelector() {
     </div>
   )
 }
-

@@ -1,378 +1,278 @@
 /**
- * OpenQASM Processor
- * Handles quantum circuit generation, processing, and analysis using pure TypeScript
- * Replaces Python and C++ dependencies for algorithm generation
+ * qasm-processor.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Server-side quantum circuit façade. Delegates QASM generation to
+ * lib/circuit-builder.ts (data-driven, parametric) and:
+ *   1. For large/massive datasets (≥ 50 K samples): spawns the fast C++ circuit
+ *      generator (scripts/generate_circuit) that receives the pre-computed
+ *      data-profile JSON and writes OpenQASM 2.0 directly.
+ *   2. Pipes the generated QASM through the compiled C++ gate-optimiser
+ *      (scripts/transpile_circuit) for fusion/cancellation.
+ *   3. Falls back to pure-TS for all steps when the binaries are absent.
+ *
+ * Public API — named exports:
+ *   generateCircuit(algorithm, data, opts?) → Promise<QuantumCircuit>
+ *   analyzeCircuit(qasm)                    → CircuitStats
+ *   transpileWithCpp(qasm)                  → Promise<{ qasm, used }>
  */
 
-export interface QuantumGate {
+import { execFile } from "child_process"
+import { promisify } from "util"
+import { existsSync } from "fs"
+import { join } from "path"
+import {
+  analyzeInputData,
+  buildCircuit,
+  type BuildOptions,
+  type DataProfile,
+  type SupportedAlgorithm,
+} from "@/lib/circuit-builder"
+
+const execFileAsync = promisify(execFile)
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
+
+export interface GateInfo {
   type: string
   qubits: number[]
-  parameter?: number
-  controlQubit?: number
-}
-
-export interface CircuitMetadata {
-  algorithm: string
-  numQubits: number
-  depth: number
-  gateCount: number
-  description: string
-  expectedOutcome?: string
+  angle?: number
 }
 
 export interface QuantumCircuit {
   qasm: string
-  metadata: CircuitMetadata
-  gates: QuantumGate[]
+  qubits: number
+  depth: number
+  gates: GateInfo[]
+  recommended_shots: number
+  gate_count: number
+  algorithm: string
+  /** Human-readable summary of how the data shaped the circuit parameters. */
+  paramSummary: string
+  /** Whether the C++ transpiler pass was applied. */
+  transpiled: boolean
+  /** Dataset size tier that shaped this circuit. */
+  dataScale: string
+  /** Ansatz / iteration layer count used. */
+  layers: number
 }
+
+export interface CircuitStats {
+  qubits: number
+  depth: number
+  gateCount: number
+  circuitType: string
+}
+
+// ─── C++ binaries ─────────────────────────────────────────────────────────────
+
+const CPP_GENERATE  = join(process.cwd(), "scripts", "generate_circuit")
+const CPP_TRANSPILE = join(process.cwd(), "scripts", "transpile_circuit")
+const GEN_AVAILABLE = existsSync(CPP_GENERATE)
+const XPL_AVAILABLE = existsSync(CPP_TRANSPILE)
+
+// Threshold: use C++ generator when dataset has ≥ this many samples
+const CPP_GEN_THRESHOLD = 50_000
+
+/**
+ * Generate OpenQASM 2.0 using the C++ generator binary.
+ * The data-profile JSON is serialised and piped to stdin.
+ * Returns null if binary absent or generation fails → caller falls back to TS.
+ */
+async function generateWithCpp(
+  algo: SupportedAlgorithm,
+  profile: DataProfile,
+): Promise<string | null> {
+  if (!GEN_AVAILABLE) return null
+  const payload = JSON.stringify({
+    algorithm:    algo,
+    qubits:       profile.qubits,
+    depth:        profile.depth,
+    layers:       profile.layers,
+    gateCount:    profile.gateCount,
+    angles:       profile.angles,
+    dataScale:    profile.dataScale,
+    sampleCount:  profile.sampleCount,
+    featureCount: profile.featureCount,
+    angleScale:   profile.buildOptions.angleScale ?? 1.0,
+    maxQubits:    profile.buildOptions.maxQubits ?? null,
+    forceLayers:  profile.buildOptions.forceLayers ?? null,
+  })
+  try {
+    const { stdout } = await execFileAsync(CPP_GENERATE, [], {
+      input:     payload,
+      timeout:   10_000,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding:  "utf8",
+    } as any)
+    const s = String(stdout).trim()
+    return s.startsWith("OPENQASM") ? s : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Pipe QASM through the compiled C++ gate-optimiser when available.
+ * Returns the original string unchanged if the binary is absent or errors.
+ */
+export async function transpileWithCpp(
+  qasm: string,
+): Promise<{ qasm: string; used: boolean }> {
+  if (!XPL_AVAILABLE) return { qasm, used: false }
+  try {
+    const { stdout } = await execFileAsync(CPP_TRANSPILE, [], {
+      input:     qasm,
+      timeout:   5_000,
+      maxBuffer: 1024 * 1024,
+      encoding:  "utf8",
+    } as any)
+    return { qasm: String(stdout).trim(), used: true }
+  } catch {
+    return { qasm, used: false }
+  }
+}
+
+// ─── Core functions ────────────────────────────────────────────────────────────
+
+/**
+ * Build a parametric circuit from uploaded data, then optimise via C++.
+ * All register sizes, rotation angles, and gate structure are derived from
+ * the data profile — nothing is hardcoded.
+ *
+ * Pipeline:
+ *   1. analyzeInputData()        → safe O(5K) sample, real log-scale complexity
+ *   2. C++ generator (if large)  → fast QASM directly from profile JSON
+ *      OR TS buildCircuit()      → pure-TS fallback
+ *   3. C++ transpiler            → gate fusion + CX cancellation (if available)
+ */
+export async function generateCircuit(
+  algorithm: string,
+  data: unknown,
+  opts: BuildOptions = {},
+): Promise<QuantumCircuit> {
+  const algo    = sanitizeAlgorithm(algorithm)
+  const profile: DataProfile = analyzeInputData(data, opts)
+
+  let rawQasm: string
+  let usedNativeGen = false
+
+  // Use the fast C++ generator for large / massive datasets
+  if (profile.sampleCount >= CPP_GEN_THRESHOLD && GEN_AVAILABLE) {
+    const nativeQasm = await generateWithCpp(algo, profile)
+    if (nativeQasm) {
+      rawQasm       = nativeQasm
+      usedNativeGen = true
+    } else {
+      rawQasm = buildCircuit(algo, profile).qasm
+    }
+  } else {
+    rawQasm = buildCircuit(algo, profile).qasm
+  }
+
+  const { qasm, used: transpiled } = await transpileWithCpp(rawQasm)
+  const built = buildCircuit(algo, profile) // re-run for metadata (cheap)
+
+  return {
+    qasm,
+    qubits:            built.qubits,
+    depth:             built.depth,
+    gates:             parseQASMToGates(qasm),
+    recommended_shots: recommendShots(profile),
+    gate_count:        built.gateCount,
+    algorithm:         algo,
+    paramSummary:      built.paramSummary,
+    transpiled:        transpiled || usedNativeGen,
+    dataScale:         profile.dataScale,
+    layers:            profile.layers,
+  }
+}
+
+/**
+ * Analyse an existing QASM string without running simulation.
+ * Used by the visualise and transpile routes.
+ */
+export function analyzeCircuit(qasm: string): CircuitStats {
+  const qubits    = extractQubits(qasm)
+  const gateCount = countGates(qasm)
+  const depth     = Math.max(1, Math.ceil(gateCount / Math.max(1, qubits)))
+  const circuitType = detectCircuitType(qasm)
+  return { qubits, depth, gateCount, circuitType }
+}
+
+// ─── Class wrapper (backwards-compat) ─────────────────────────────────────────
 
 export class QASMProcessor {
-  private static readonly ALGORITHM_TEMPLATES: Record<string, string> = {
-    bell: "scripts/algorithms/bell_state.qasm",
-    grover: "scripts/algorithms/grover_search.qasm",
-    shor: "scripts/algorithms/shor_period_finding.qasm",
-    vqe: "scripts/algorithms/vqe_ansatz.qasm",
-    qaoa: "scripts/algorithms/qaoa_maxcut.qasm",
-  }
-
-  /**
-   * Generate quantum circuit based on algorithm and data
-   */
-  static async generateCircuit(algorithm: string, data: Record<string, any>): Promise<QuantumCircuit> {
-    const algorithmKey = algorithm.toLowerCase()
-
-    // Load template or generate dynamically
-    let qasm: string
-    let metadata: CircuitMetadata
-
-    switch (algorithmKey) {
-      case "bell":
-        qasm = this.generateBellState()
-        metadata = {
-          algorithm: "Bell",
-          numQubits: 2,
-          depth: 2,
-          gateCount: 3,
-          description: "Creates maximally entangled Bell state",
-          expectedOutcome: "50% |00⟩, 50% |11⟩",
-        }
-        break
-
-      case "grover":
-        qasm = this.generateGrover(data.num_items || 16)
-        const n = Math.ceil(Math.log2(data.num_items || 16))
-        metadata = {
-          algorithm: "Grover",
-          numQubits: n,
-          depth: Math.floor((Math.PI / 4) * Math.sqrt(2 ** n)) * 10,
-          gateCount: n * 20,
-          description: "Grover search for unsorted database",
-          expectedOutcome: `O(√N) speedup, searches ${2 ** n} items`,
-        }
-        break
-
-      case "shor":
-        qasm = this.generateShor(data.number || 15)
-        metadata = {
-          algorithm: "Shor",
-          numQubits: 16,
-          depth: 50,
-          gateCount: 120,
-          description: "Shor period finding for factoring",
-          expectedOutcome: "Period detection for classical factoring",
-        }
-        break
-
-      case "vqe":
-        qasm = this.generateVQE(data.molecule || "H2")
-        metadata = {
-          algorithm: "VQE",
-          numQubits: data.qubits || 4,
-          depth: 12,
-          gateCount: 48,
-          description: "Variational Quantum Eigensolver",
-          expectedOutcome: "Ground state energy estimation",
-        }
-        break
-
-      case "qaoa":
-        qasm = this.generateQAOA(data.edges || 4)
-        metadata = {
-          algorithm: "QAOA",
-          numQubits: data.nodes || 4,
-          depth: 16,
-          gateCount: 64,
-          description: "Quantum Approximate Optimization",
-          expectedOutcome: "Approximate solution to combinatorial problem",
-        }
-        break
-
-      default:
-        throw new Error(`Unknown algorithm: ${algorithm}`)
-    }
-
-    const gates = this.parseQASMToGates(qasm)
-
-    return { qasm, metadata, gates }
-  }
-
-  /**
-   * Generate Bell state circuit
-   */
-  private static generateBellState(): string {
-    return `OPENQASM 2.0;
-include "qelib1.inc";
-
-qreg q[2];
-creg c[2];
-
-h q[0];
-cx q[0],q[1];
-measure q -> c;`
-  }
-
-  /**
-   * Generate Grover's search circuit
-   */
-  private static generateGrover(numItems: number): string {
-    const n = Math.ceil(Math.log2(numItems))
-    const iterations = Math.floor((Math.PI / 4) * Math.sqrt(2 ** n))
-
-    let qasm = `OPENQASM 2.0;\ninclude "qelib1.inc";\n\n`
-    qasm += `qreg q[${n}];\ncreg c[${n}];\n\n`
-
-    // Initialize superposition
-    for (let i = 0; i < n; i++) {
-      qasm += `h q[${i}];\n`
-    }
-
-    // Grover iterations (limited to 3 for efficiency)
-    for (let iter = 0; iter < Math.min(iterations, 3); iter++) {
-      // Oracle
-      qasm += `\n// Grover iteration ${iter + 1}\n`
-      qasm += `x q[${n - 1}];\n`
-      for (let i = 0; i < n - 1; i++) {
-        qasm += `cx q[${i}],q[${n - 1}];\n`
-      }
-      qasm += `x q[${n - 1}];\n`
-
-      // Diffusion
-      for (let i = 0; i < n; i++) {
-        qasm += `h q[${i}];\nx q[${i}];\n`
-      }
-      for (let i = 0; i < n - 1; i++) {
-        qasm += `cx q[${i}],q[${n - 1}];\n`
-      }
-      for (let i = 0; i < n; i++) {
-        qasm += `x q[${i}];\nh q[${i}];\n`
-      }
-    }
-
-    // Measurement
-    qasm += `\nmeasure q -> c;`
-
-    return qasm
-  }
-
-  /**
-   * Generate Shor's algorithm circuit (simplified)
-   */
-  private static generateShor(number: number): string {
-    const n = 16
-    const control = 8
-    const target = 8
-
-    let qasm = `OPENQASM 2.0;\ninclude "qelib1.inc";\n\n`
-    qasm += `qreg q[${n}];\ncreg c[${control}];\n\n`
-
-    // Superposition on control register
-    for (let i = 0; i < control; i++) {
-      qasm += `h q[${i}];\n`
-    }
-
-    // Controlled operations
-    qasm += `\n// Modular exponentiation\n`
-    for (let i = 0; i < control; i++) {
-      qasm += `cx q[${i}],q[${control + (i % target)}];\n`
-    }
-
-    // Inverse QFT
-    qasm += `\n// Inverse QFT\n`
-    for (let i = 0; i < control / 2; i++) {
-      qasm += `swap q[${i}],q[${control - 1 - i}];\n`
-    }
-
-    for (let i = 0; i < control; i++) {
-      qasm += `h q[${i}];\n`
-      for (let j = 0; j < i; j++) {
-        const angle = -Math.PI / 2 ** (i - j)
-        qasm += `cp(${angle.toFixed(4)}) q[${j}],q[${i}];\n`
-      }
-    }
-
-    // Measurement
-    qasm += `\n// Measure control register\n`
-    for (let i = 0; i < control; i++) {
-      qasm += `measure q[${i}] -> c[${i}];\n`
-    }
-
-    return qasm
-  }
-
-  /**
-   * Generate VQE ansatz
-   */
-  private static generateVQE(molecule: string): string {
-    const n = 4
-    const layers = 3
-
-    let qasm = `OPENQASM 2.0;\ninclude "qelib1.inc";\n\n`
-    qasm += `qreg q[${n}];\ncreg c[${n}];\n\n`
-
-    for (let layer = 0; layer < layers; layer++) {
-      qasm += `// Layer ${layer + 1}\n`
-
-      // Rotation layer
-      for (let i = 0; i < n; i++) {
-        const theta = (Math.random() * 2 * Math.PI).toFixed(4)
-        qasm += `ry(${theta}) q[${i}];\n`
-      }
-
-      // Entangling layer
-      for (let i = 0; i < n - 1; i++) {
-        qasm += `cx q[${i}],q[${i + 1}];\n`
-      }
-
-      // Additional rotations
-      for (let i = 0; i < n; i++) {
-        const phi = (Math.random() * 2 * Math.PI).toFixed(4)
-        qasm += `rz(${phi}) q[${i}];\n`
-      }
-      qasm += `\n`
-    }
-
-    qasm += `measure q -> c;`
-
-    return qasm
-  }
-
-  /**
-   * Generate QAOA circuit
-   */
-  private static generateQAOA(numEdges: number): string {
-    const n = numEdges
-    const p = 2 // QAOA layers
-
-    let qasm = `OPENQASM 2.0;\ninclude "qelib1.inc";\n\n`
-    qasm += `qreg q[${n}];\ncreg c[${n}];\n\n`
-
-    // Initialize superposition
-    for (let i = 0; i < n; i++) {
-      qasm += `h q[${i}];\n`
-    }
-
-    // QAOA layers
-    for (let layer = 0; layer < p; layer++) {
-      const gamma = (Math.random() * 2 * Math.PI).toFixed(4)
-      const beta = (Math.random() * 2 * Math.PI).toFixed(4)
-
-      qasm += `\n// QAOA layer ${layer + 1}\n`
-
-      // Problem Hamiltonian
-      for (let i = 0; i < n - 1; i++) {
-        qasm += `cx q[${i}],q[${i + 1}];\n`
-        qasm += `rz(${gamma}) q[${i + 1}];\n`
-        qasm += `cx q[${i}],q[${i + 1}];\n`
-      }
-
-      // Mixer Hamiltonian
-      for (let i = 0; i < n; i++) {
-        qasm += `rx(${beta}) q[${i}];\n`
-      }
-    }
-
-    qasm += `\nmeasure q -> c;`
-
-    return qasm
-  }
-
-  /**
-   * Parse QASM to gate structure
-   */
-  private static parseQASMToGates(qasm: string): QuantumGate[] {
-    const gates: QuantumGate[] = []
-    const lines = qasm.split("\n")
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (
-        !trimmed ||
-        trimmed.startsWith("//") ||
-        trimmed.startsWith("OPENQASM") ||
-        trimmed.startsWith("include") ||
-        trimmed.startsWith("qreg") ||
-        trimmed.startsWith("creg")
-      ) {
-        continue
-      }
-
-      // Parse gate operations
-      const gateMatch = trimmed.match(/^(\w+)(?:$$([^)]+)$$)?\s+(.+);$/)
-      if (gateMatch) {
-        const [, gateType, param, qubitsStr] = gateMatch
-
-        // Parse qubits
-        const qubits: number[] = []
-        const qubitMatches = qubitsStr.matchAll(/q\[(\d+)\]/g)
-        for (const match of qubitMatches) {
-          qubits.push(Number.parseInt(match[1]))
-        }
-
-        const gate: QuantumGate = { type: gateType, qubits }
-        if (param) {
-          gate.parameter = Number.parseFloat(param)
-        }
-        if (gateType === "cx" || gateType === "cp") {
-          gate.controlQubit = qubits[0]
-          gate.qubits = [qubits[1]]
-        }
-
-        gates.push(gate)
-      }
-    }
-
-    return gates
-  }
-
-  /**
-   * Analyze circuit statistics
-   */
-  static analyzeCircuit(qasm: string): Record<string, any> {
-    const gates = this.parseQASMToGates(qasm)
-
-    // Count gate types
-    const gateCounts: Record<string, number> = {}
-    gates.forEach((gate) => {
-      gateCounts[gate.type] = (gateCounts[gate.type] || 0) + 1
-    })
-
-    // Find max qubit index
-    let maxQubit = 0
-    gates.forEach((gate) => {
-      gate.qubits.forEach((q) => {
-        if (q > maxQubit) maxQubit = q
-      })
-      if (gate.controlQubit !== undefined && gate.controlQubit > maxQubit) {
-        maxQubit = gate.controlQubit
-      }
-    })
-
-    return {
-      numQubits: maxQubit + 1,
-      totalGates: gates.length,
-      gateTypes: gateCounts,
-      estimatedDepth: Math.ceil(gates.length / (maxQubit + 1)),
-    }
-  }
+  static generateCircuit = generateCircuit
+  static analyzeCircuit  = analyzeCircuit
 }
 
+// ─── Private helpers ───────────────────────────────────────────────────────────
+
+function sanitizeAlgorithm(raw: string): SupportedAlgorithm {
+  const supported: SupportedAlgorithm[] = ["vqe", "qaoa", "grover", "shor", "bell", "qft"]
+  const lower = (raw ?? "").toLowerCase().trim() as SupportedAlgorithm
+  return supported.includes(lower) ? lower : "vqe"
+}
+
+function recommendShots(p: DataProfile): number {
+  // Shot count scales with complexity AND data scale tier
+  const scaleBonus: Record<string, number> = { small: 0, medium: 512, large: 1024, massive: 2048 }
+  const bonus = scaleBonus[p.dataScale] ?? 0
+  return Math.min(8192, Math.max(512, 512 + Math.round(p.complexity * 2048) + p.qubits * 32 + bonus))
+}
+
+function extractQubits(qasm: string): number {
+  const total = [...qasm.matchAll(/qreg\s+\w+\[(\d+)\]/g)]
+    .reduce((s, m) => s + parseInt(m[1], 10), 0)
+  return total || 4
+}
+
+function countGates(qasm: string): number {
+  return qasm.split("\n").filter((l) => {
+    const s = l.trim()
+    return (
+      s.length > 0 &&
+      !s.startsWith("OPENQASM") &&
+      !s.startsWith("include") &&
+      !s.startsWith("qreg") &&
+      !s.startsWith("creg") &&
+      !s.startsWith("//") &&
+      !s.startsWith("measure")
+    )
+  }).length
+}
+
+function detectCircuitType(qasm: string): string {
+  const q = qasm.toLowerCase()
+  if (q.includes("rx(") && q.includes("rz("))  return "qaoa"
+  if (q.includes("ry(") && q.includes("rz("))  return "vqe"
+  if (q.includes("cu1"))                        return "shor"
+  if (q.includes("rz(") && q.includes("h "))   return "grover"
+  return "bell"
+}
+
+function parseQASMToGates(qasm: string): GateInfo[] {
+  const gates: GateInfo[] = []
+  for (const line of qasm.split("\n")) {
+    const s = line.trim()
+    if (!s || s.startsWith("//") || s.startsWith("OPENQASM") ||
+        s.startsWith("include") || s.startsWith("qreg") ||
+        s.startsWith("creg") || s.startsWith("measure")) continue
+
+    const withAngle = s.match(/^(\w+)\(([^)]+)\)\s+(.*);/)
+    const plain     = s.match(/^(\w+)\s+(.*);/)
+
+    if (withAngle) {
+      const [, type, angleStr, qStr] = withAngle
+      gates.push({ type, angle: parseFloat(angleStr), qubits: parseQubitList(qStr) })
+    } else if (plain) {
+      const [, type, qStr] = plain
+      gates.push({ type, qubits: parseQubitList(qStr) })
+    }
+  }
+  return gates
+}
+
+function parseQubitList(str: string): number[] {
+  return [...str.matchAll(/\[(\d+)\]/g)].map((m) => parseInt(m[1], 10))
+}

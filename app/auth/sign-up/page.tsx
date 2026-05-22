@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
+
+export const dynamic = 'force-dynamic'
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useState, useRef, useEffect } from "react"
@@ -17,7 +19,23 @@ import Image from "next/image"
 import { useLanguage } from "@/contexts/language-context"
 import { Eye, EyeOff } from "lucide-react"
 
-// SECURITY: Supabase auth imports removed
+// Uses internal auth endpoints for signup via /api/auth/signup.
+
+function getErrorMessage(err: unknown): string {
+  if (!err) return 'An error occurred. Please try again.'
+  if (typeof err === 'string' && err && err !== '{}') return err
+  if (typeof err === 'object') {
+    const obj = err as Record<string, unknown>
+    if (typeof obj.status === 'number') {
+      if (obj.status === 409) return 'This email is already registered. Please sign in.'
+      if (obj.status === 400) return 'Please check your inputs and try again.'
+      if (obj.status >= 500) return 'Server error. Please try again shortly.'
+    }
+    if (typeof obj.message === 'string' && obj.message && obj.message !== '{}') return obj.message
+  }
+  if (err instanceof Error && err.message && err.message !== '{}') return err.message
+  return 'An error occurred. Please try again.'
+}
 
 const COUNTRY_CODES: { [key: string]: string } = {
   Argentina: "+54",
@@ -167,40 +185,34 @@ export default function SignUpPage() {
     }
 
     try {
-      const supabase = createClient()
-      const fullPhone = `${phonePrefix}${phoneNumber}`
-      const fullName = `${firstName} ${lastName}`
+      const trimmedEmail = email.trim()
 
-      const { data: authData, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            name: fullName,
-            first_name: firstName,
-            last_name: lastName,
-            country,
-            country_code: phonePrefix,
-            phone_number: phoneNumber,
-            occupation,
-            organization,
-          },
-        },
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: trimmedEmail,
+          password,
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          country,
+          phone: phoneNumber,
+          occupation,
+          organization,
+        }),
       })
 
-      if (signUpError) {
-        setError(signUpError.message)
+      const data = await response.json()
+
+      if (!response.ok) {
+        setError(data.error || 'Signup failed')
         return
       }
 
-      if (!authData.user) {
-        setError("No user data returned from sign up")
-        return
-      }
-
-      router.push("/qsaas/dashboard")
+      // Signup succeeded — cookie already set by server, go to dashboard
+      router.push('/qsaas/dashboard')
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An unexpected error occurred")
+      setError(getErrorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -540,7 +552,7 @@ export default function SignUpPage() {
                   {!hasScrolledTerms && (
                     <span className="block text-xs text-muted-foreground mt-1">
                       {language === "es"
-                        ? "(Desplázate hasta el final para habilitar)"
+                        ? "(Despl��zate hasta el final para habilitar)"
                         : "(Scroll to the bottom to enable)"}
                     </span>
                   )}
@@ -548,7 +560,9 @@ export default function SignUpPage() {
               </div>
             </div>
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p className="text-sm text-destructive" role="alert">{error}</p>
+            )}
 
             <Button
               type="submit"
@@ -579,4 +593,3 @@ export default function SignUpPage() {
     </div>
   )
 }
-

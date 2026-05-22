@@ -21,4 +21,3 @@ export function LoadingSpinner({ size = "default" }: { size?: "sm" | "default" }
     </div>
   )
 }
-

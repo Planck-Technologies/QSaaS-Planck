@@ -1,290 +1,546 @@
+/**
+ * app/qsaas/dashboard/page.tsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * QSaaS Digital Twin Dashboard.
+ *
+ * Layout:
+ *   • 4 summary stat cards
+ *   • Tab bar: "All" + one tab per digital twin
+ *   • Each tab renders a <DigitalTwinDashboard> with 3 live charts + runs table
+ *
+ * Live updates strategy:
+ *   • SSE streams provide real-time execution updates
+ *   • When the user enables SDK-mode in the runner the SSE hook inside
+ *     DigitalTwinDashboard appends rows in real-time without any page reload
+ */
+
 "use client"
 
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { BarChart3, Zap, TrendingUp, Clock, Download } from "lucide-react"
+import { BarChart3, Zap, TrendingUp, Clock, Radio } from "lucide-react"
 import Link from "next/link"
 import { PageHeader } from "@/components/page-header"
-import { useEffect, useState } from "react"
-
-// SECURITY: Supabase database imports removed
+import { useEffect, useState, useMemo, useCallback } from "react"
+import { useRouter } from "next/navigation"
+import { DigitalTwinDashboard } from "@/components/dashboard/digital-twin-dashboard"
+import { useLiveExecutions, type ExecutionRow } from "@/hooks/use-live-executions"
+import { useIsGuest } from "@/components/guest-banner"
+import { useLiveMode } from "@/hooks/use-live-mode"
+import { useRef } from "react"
+import { useUIPreferences } from "@/contexts/ui-preferences-context"
 
 type TimeRange = "24h" | "7d" | "30d"
 
+interface DigitalTwin {
+  id: string
+  name: string
+  description: string | null
+  image_url: string | null
+}
+
 interface DashboardStats {
-  avgCircuitsRun: number
+  totalRuns: number
   avgSuccessRate: number
   avgRuntime: number
   avgQubits: number
 }
 
-interface RecentCircuit {
-  id: string
-  circuit_name: string
-  algorithm: string
-  status: string
-  qubits_used: number
-  runtime_ms: number
-  created_at: string
+// ── Execution cache helpers ────────────────────────────────────────────────
+// SQLite on Vercel is stored in /tmp (set via vercel.json DB_DIR), which is
+// ephemeral: it's wiped on every cold start.  These helpers use localStorage
+// as a persistent fallback so authenticated users keep their history across
+// server restarts without requiring an external database.
+const EXEC_CACHE_KEY = "planck_exec_cache"
+const CLEARED_BEFORE_KEY = "planck_exec_cleared_before"
+const DELETED_IDS_KEY = "planck_exec_deleted_ids"
+
+/** Filter out rows the user explicitly deleted or cleared (cross-lambda guard). */
+function applyDeletedFilter(rows: ExecutionRow[]): ExecutionRow[] {
+  let clearedBefore: Date | null = null
+  let deletedIds = new Set<string>()
+  try {
+    const ts = localStorage.getItem(CLEARED_BEFORE_KEY)
+    if (ts) clearedBefore = new Date(ts)
+  } catch {}
+  try {
+    const raw = localStorage.getItem(DELETED_IDS_KEY)
+    if (raw) deletedIds = new Set(JSON.parse(raw) as string[])
+  } catch {}
+  if (!clearedBefore && deletedIds.size === 0) return rows
+  return rows.filter((r) => {
+    if (deletedIds.has(r.id)) return false
+    if (clearedBefore && new Date(r.created_at) <= clearedBefore) return false
+    return true
+  })
+}
+
+function readExecCache(): ExecutionRow[] {
+  try {
+    const raw = localStorage.getItem(EXEC_CACHE_KEY)
+    if (!raw) return []
+    return applyDeletedFilter(JSON.parse(raw) as ExecutionRow[])
+  } catch {
+    return []
+  }
+}
+
+function writeExecCache(rows: ExecutionRow[]) {
+  try {
+    localStorage.setItem(EXEC_CACHE_KEY, JSON.stringify(rows.slice(0, 500)))
+  } catch {
+    // localStorage full or unavailable — fail silently
+  }
+}
+
+function mergeExecRows(serverRows: ExecutionRow[], cachedRows: ExecutionRow[]): ExecutionRow[] {
+  const serverIds = new Set(serverRows.map((r) => r.id))
+  const extra = cachedRows.filter((r) => !serverIds.has(r.id))
+  // Apply deletion filter so rows deleted in Settings don't reappear from a
+  // different Vercel lambda that still has them in its ephemeral SQLite.
+  const merged = applyDeletedFilter([...serverRows, ...extra])
+  merged.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  return merged
 }
 
 export default function DashboardPage() {
   const [timeRange, setTimeRange] = useState<TimeRange>("7d")
-  const [stats, setStats] = useState<DashboardStats>({
-    avgCircuitsRun: 0,
-    avgSuccessRate: 0,
-    avgRuntime: 0,
-    avgQubits: 0,
-  })
-  const [recentCircuits, setRecentCircuits] = useState<RecentCircuit[]>([])
-  const [allCircuits, setAllCircuits] = useState<RecentCircuit[]>([])
+  const [allRows, setAllRows] = useState<ExecutionRow[]>([])
+  const [twins, setTwins] = useState<DigitalTwin[]>([])
+  const [activeTab, setActiveTab] = useState<"all" | string>("all")
   const [loading, setLoading] = useState(true)
+  const router = useRouter()
+  const isGuest = useIsGuest()
+  // Shared live mode — synced with runner via sessionStorage + BroadcastChannel
+  const [liveEnabled, setLiveEnabled] = useLiveMode(isGuest)
 
+  // Flash animation for stat cards when values change
+  const [flashStats, setFlashStats] = useState(false)
+  const prevStatsRef = useRef<DashboardStats | null>(null)
+
+  // Storage warning: read localStorage cache size on mount
+  const STORAGE_CAP_BYTES = 50 * 1024 * 1024
+  const [storageUsedBytes, setStorageUsedBytes] = useState(0)
   useEffect(() => {
-    loadDashboardData()
-  }, [timeRange])
-
-  async function loadDashboardData() {
-    setLoading(true)
-    const supabase = createBrowserClient()
-
+    if (isGuest) return
     try {
-      const cachedCircuits = sessionStorage.getItem("planck_recent_circuits")
-      if (cachedCircuits && timeRange === "7d") {
-        const circuits = JSON.parse(cachedCircuits)
-        setRecentCircuits(circuits.slice(0, 5))
-        calculateStats(circuits)
-      }
+      const raw = localStorage.getItem(EXEC_CACHE_KEY)
+      if (!raw) return
+      const rows = JSON.parse(raw) as ExecutionRow[]
+      const total = rows.reduce((sum, r) => sum + JSON.stringify(r).length, 0)
+      setStorageUsedBytes(total)
+    } catch { /* non-fatal */ }
+  }, [isGuest])
 
-      const now = new Date()
-      const timeThreshold = new Date()
-      switch (timeRange) {
-        case "24h":
-          timeThreshold.setHours(now.getHours() - 24)
-          break
-        case "7d":
-          timeThreshold.setDate(now.getDate() - 7)
-          break
-        case "30d":
-          timeThreshold.setDate(now.getDate() - 30)
-          break
-      }
+  // Page-level SSE feed — drives stat cards and tab counts in real time.
+  // The embedded <DigitalTwinDashboard> uses liveEnabled=false and receives
+  // real-time rows via the initialRows prop (rowsForTab) instead, keeping
+  // only one SSE connection open per page.
+  const { rows: sseRows } = useLiveExecutions({ enabled: liveEnabled && !isGuest })
 
-      const { data: logs, error } = await supabase
-        .from("execution_logs")
-        .select("*")
-        .gte("created_at", timeThreshold.toISOString())
-        .order("created_at", { ascending: false })
+  // Append a single execution row to allRows + cache without a full refetch.
+  // Used by the BroadcastChannel listener so UI runs from runner appear instantly.
+  const appendExecRow = useCallback((row: ExecutionRow) => {
+    setAllRows((prev) => {
+      if (prev.some((r) => r.id === row.id)) return prev
+      const next = [row, ...prev]
+      next.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      // Also update localStorage cache
+      writeExecCache(next)
+      return next
+    })
+  }, [])
 
-      if (error) {
+  // Sync SSE rows (from page-level hook) into allRows so stat cards and tab
+  // counts stay up-to-date. appendExecRow deduplicates by ID.
+  useEffect(() => {
+    sseRows.forEach((row) => appendExecRow(row))
+  }, [sseRows, appendExecRow])
+
+  // BroadcastChannel listener removed — the useLiveExecutions hook's own
+  // always-active BC listener already captures execution_completed broadcasts
+  // into sseRows, which the sync effect above feeds into allRows.
+
+  const loadAllRef = useRef<() => void>(() => {})
+
+  useEffect(() => { loadAll() }, [timeRange, isGuest])
+
+  // Re-fetch when the browser tab becomes visible again (user switches back)
+  // or when liveEnabled is toggled — ensures stat cards are always fresh.
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") loadAllRef.current() }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => document.removeEventListener("visibilitychange", onVisible)
+  }, [])
+
+  useEffect(() => { if (liveEnabled && !isGuest) loadAllRef.current() }, [liveEnabled, isGuest])
+
+  // Periodic fallback re-fetch every 10 s while live mode is on.
+  // Covers the case where SSE is connected to a different Vercel function
+  // instance than the one handling SDK writes.
+  useEffect(() => {
+    if (!liveEnabled || isGuest) return
+    const id = setInterval(() => loadAllRef.current(), 10_000)
+    return () => clearInterval(id)
+  }, [liveEnabled, isGuest])
+
+  async function loadAll() {
+    setLoading(true)
+    try {
+      // Guests get empty dashboard — no API call needed
+      if (isGuest) {
+        setAllRows([])
+        setTwins([])
+        setLoading(false)
         return
       }
-
-      if (logs && logs.length > 0) {
-        calculateStats(logs)
-        setAllCircuits(logs as RecentCircuit[])
-        setRecentCircuits(logs as RecentCircuit[])
-
-        if (timeRange === "7d") {
-          sessionStorage.setItem("planck_recent_circuits", JSON.stringify(logs.slice(0, 10)))
-        }
-      } else {
-        setStats({
-          avgCircuitsRun: 0,
-          avgSuccessRate: 0,
-          avgRuntime: 0,
-          avgQubits: 0,
-        })
-        setAllCircuits([])
-        setRecentCircuits([])
+      const res = await fetch(`/api/dashboard/data?timeRange=${timeRange}`)
+      if (res.status === 401) {
+        router.push('/auth/login')
+        return
       }
+      const data = await res.json()
+      const serverRows: ExecutionRow[] = data.logs || []
+
+      // Merge with localStorage cache to survive Vercel cold-start DB wipes.
+      // Server rows take priority for IDs that exist in both; cache fills in
+      // rows that the server lost after a cold start.
+      const cachedRows = readExecCache()
+      const merged = mergeExecRows(serverRows, cachedRows)
+      writeExecCache(merged)
+
+      // Use a functional updater so we never blow away SSE rows that arrived
+      // between the fetch start and its resolution.
+      setAllRows((prev) => {
+        const ids = new Set(merged.map((r) => r.id))
+        const extra = prev.filter((r) => !ids.has(r.id))
+        if (extra.length === 0) return merged
+        const combined = [...merged, ...extra]
+        combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        return combined
+      })
+      setTwins(data.twins || [])
     } catch (error) {
-      } finally {
+      console.error('[DASHBOARD] Error loading dashboard data:', error)
+      // Show cached data when server fetch fails
+      const cachedRows = readExecCache()
+      if (cachedRows.length > 0) {
+        console.log('[DASHBOARD] Showing', cachedRows.length, 'cached executions after fetch error')
+        setAllRows(cachedRows)
+      }
+    } finally {
       setLoading(false)
     }
   }
+  // Keep ref in sync so visibility/periodic callbacks call the latest closure.
+  loadAllRef.current = loadAll
 
-  function calculateStats(logs: any[]) {
-    const completedOrSavedLogs = logs.filter((log) => log.status === "completed" || log.status === "saved")
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  const stats = useMemo<DashboardStats>(() => {
+    const done = allRows.filter((r) => r.status === "completed" || r.status === "saved")
+    const n = done.length
+    if (n === 0) return { totalRuns: 0, avgSuccessRate: 0, avgRuntime: 0, avgQubits: 0 }
+    const success = done.filter((r) => r.status === "completed").length
+    return {
+      totalRuns: n,
+      avgSuccessRate: Math.round((success / n) * 1000) / 10,
+      avgRuntime: Math.round(done.reduce((s, r) => s + (r.runtime_ms || 0), 0) / n),
+      avgQubits: Math.round(done.reduce((s, r) => s + (r.qubits_used || 0), 0) / n),
+    }
+  }, [allRows])
 
-    const totalCircuits = completedOrSavedLogs.length
-    const successfulCircuits = completedOrSavedLogs.filter((log) => log.status === "completed").length
-    const avgSuccessRate = totalCircuits > 0 ? (successfulCircuits / totalCircuits) * 100 : 0
+  // Trigger flash animation when stat values actually change
+  useEffect(() => {
+    if (loading) return
+    const prev = prevStatsRef.current
+    prevStatsRef.current = stats
+    if (
+      prev !== null &&
+      (prev.totalRuns !== stats.totalRuns ||
+        prev.avgSuccessRate !== stats.avgSuccessRate ||
+        prev.avgRuntime !== stats.avgRuntime ||
+        prev.avgQubits !== stats.avgQubits)
+    ) {
+      setFlashStats(true)
+      const t = setTimeout(() => setFlashStats(false), 250)
+      return () => clearTimeout(t)
+    }
+  }, [stats, loading])
 
-    const totalRuntime = completedOrSavedLogs.reduce((sum, log) => sum + (log.runtime_ms || 0), 0)
-    const avgRuntime = totalCircuits > 0 ? totalRuntime / totalCircuits : 0
+  // ── Per-DT rows ────────────────────────────────────────────────────────────
+  const rowsForTab = useMemo<ExecutionRow[]>(() => {
+    if (activeTab === "all") return allRows
+    return allRows.filter((r) => r.digital_twin_id === activeTab)
+  }, [allRows, activeTab])
 
-    const totalQubits = completedOrSavedLogs.reduce((sum, log) => sum + (log.qubits_used || 0), 0)
-    const avgQubits = totalCircuits > 0 ? totalQubits / totalCircuits : 0
+  const activeTwin = twins.find((t) => t.id === activeTab) ?? null
 
-    setStats({
-      avgCircuitsRun: totalCircuits,
-      avgSuccessRate: Math.round(avgSuccessRate * 10) / 10,
-      avgRuntime: Number(avgRuntime.toFixed(3)),
-      avgQubits: Math.round(avgQubits * 10) / 10,
-    })
-  }
-
-  const handleDownloadCircuitJson = async (circuitId: string) => {
-    const supabase = createBrowserClient()
-
-    try {
-      const { data, error } = await supabase.from("execution_logs").select("*").eq("id", circuitId).single()
-
-      if (error) throw error
-
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement("a")
-      link.href = url
-      link.download = `${data.circuit_name}_${circuitId}.json`
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      URL.revokeObjectURL(url)
-    } catch (error) {
-      }
-  }
+  const { isHidden } = useUIPreferences()
 
   const statCards = [
-    {
-      label: "Total Circuits Run",
-      value: loading ? "..." : stats.avgCircuitsRun.toString(),
-      change: `Last ${timeRange}`,
-      icon: Zap,
-    },
-    {
-      label: "Avg Success Rate",
-      value: loading ? "..." : `${stats.avgSuccessRate}%`,
-      change: `Last ${timeRange}`,
-      icon: TrendingUp,
-    },
-    {
-      label: "Avg Runtime",
-      value: loading ? "..." : `${stats.avgRuntime.toFixed(3)}ms`,
-      change: `Last ${timeRange}`,
-      icon: Clock,
-    },
-    {
-      label: "Avg Qubits",
-      value: loading ? "..." : stats.avgQubits.toFixed(1),
-      change: `Last ${timeRange}`,
-      icon: BarChart3,
-    },
-  ]
+    { key: "dashboard.stat.total_runs",       label: "Total Simulations",     value: loading ? "\u2026" : stats.totalRuns.toString(),       icon: Zap },
+    { key: "dashboard.stat.avg_success_rate", label: "Avg Reliability",       value: loading ? "\u2026" : `${stats.avgSuccessRate}%`,        icon: TrendingUp },
+    { key: "dashboard.stat.avg_runtime",      label: "Avg Simulation Time",   value: loading ? "\u2026" : `${stats.avgRuntime}ms`,           icon: Clock },
+    { key: "dashboard.stat.avg_qubits",       label: "Avg Quantum Resources", value: loading ? "\u2026" : stats.avgQubits.toString(),       icon: BarChart3 },
+  ].filter((c) => !isHidden(c.key))
 
   return (
     <div className="p-8 space-y-8 px-0">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <PageHeader title="Dashboard" description="Welcome back! Here's your activity." />
-        <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
-          <SelectTrigger className="w-[180px] shadow-lg">
-            <SelectValue placeholder="Select time range" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="24h">Last 24 Hours</SelectItem>
-            <SelectItem value="7d">Last 7 Days</SelectItem>
-            <SelectItem value="30d">Last 30 Days</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {statCards.map((stat, i) => {
-          const Icon = stat.icon
-          return (
-            <Card key={i} className="p-6 hover:shadow-lg hover:scale-105 transition-all duration-300 shadow-lg">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-muted-foreground text-sm font-medium">{stat.label}</p>
-                <Icon className="text-primary" size={24} />
-              </div>
-              <p className="text-3xl font-bold text-foreground mb-2">{stat.value}</p>
-              <p className="text-sm text-primary">{stat.change}</p>
-            </Card>
-          )
-        })}
-      </div>
-
-      <ExecutionCharts logs={allCircuits} timeRange={timeRange} />
-
-      <Card className="p-6 hover:shadow-lg transition-all duration-300 shadow-lg bg-secondary">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-foreground">Recent Circuits</h2>
-          <Link href="/qsaas/runner">
-            <Button className="bg-primary hover:bg-primary/90">New Circuit</Button>
-          </Link>
+        <PageHeader title="Digital Twin Dashboard" description="System state, scenario history, and simulation insights across all your digital twins." />
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Live-mode toggle */}
+          <button
+            role="switch"
+            aria-checked={liveEnabled}
+            onClick={() => setLiveEnabled(!liveEnabled)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+              liveEnabled
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Radio size={13} className={liveEnabled ? "text-primary" : "text-muted-foreground"} />
+            {liveEnabled ? "Live" : "Live off"}
+          </button>
+          <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
+            <SelectTrigger className="w-36 shadow">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="24h">Last 24 h</SelectItem>
+              <SelectItem value="7d">Last 7 days</SelectItem>
+              <SelectItem value="30d">Last 30 days</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        {loading ? (
-          <p className="text-muted-foreground text-center py-8">Loading recent circuits...</p>
-        ) : recentCircuits.length === 0 ? (
-          <p className="text-muted-foreground text-center py-8">No circuits run in this time period.</p>
-        ) : (
-          <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
-            <table className="w-full">
-              <thead className="bg-secondary sticky top-0 z-10">
-                <tr className="border-b border-border">
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Algorithm</th>
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Name</th>
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Status</th>
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Qubits</th>
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Runtime</th>
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Timestamp</th>
-                  <th className="text-left py-3 px-4 text-muted-foreground font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentCircuits.map((circuit) => (
-                  <tr key={circuit.id} className="border-b border-border hover:bg-secondary/50 transition">
-                    <td className="py-3 px-4">
-                      <span className="inline-block px-3 py-1 rounded-full text-xs font-medium bg-primary/20 text-primary">
-                        {circuit.algorithm || "N/A"}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 font-medium text-foreground">{circuit.circuit_name}</td>
-                    <td className="py-3 px-4">
-                      <span
-                        className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
-                          circuit.status === "completed"
-                            ? "bg-primary/20 text-primary"
-                            : circuit.status === "running"
-                              ? "bg-accent/20 text-accent"
-                              : "bg-destructive/20 text-destructive"
-                        }`}
-                      >
-                        {circuit.status === "completed"
-                          ? "✓ Success"
-                          : circuit.status === "running"
-                            ? "◀ Running"
-                            : "✗ Failed"}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-foreground">{circuit.qubits_used}</td>
-                    <td className="py-3 px-4 text-foreground">
-                      {circuit.runtime_ms ? `${Number(circuit.runtime_ms).toFixed(6)}ms` : "N/A"}
-                    </td>
-                    <td className="py-3 px-4 text-muted-foreground text-sm">
-                      {new Date(circuit.created_at).toLocaleString()}
-                    </td>
-                    <td className="py-3 px-4">
-                      <Button
-                        onClick={() => handleDownloadCircuitJson(circuit.id)}
-                        size="sm"
-                        variant="ghost"
-                        className="flex items-center gap-1"
-                      >
-                        <Download size={16} />
-                        JSON
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      </div>
+
+      {/* Storage limit warning banner */}
+      {!isGuest && storageUsedBytes >= STORAGE_CAP_BYTES && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-destructive/60 bg-destructive/10 text-sm">
+          <span className="text-destructive font-bold mt-0.5">⚠</span>
+          <div>
+            <p className="font-semibold text-destructive">Execution history storage limit reached ({(storageUsedBytes / 1_048_576).toFixed(1)} MB / 50 MB)</p>
+            <p className="text-destructive/80 text-xs mt-0.5">New executions are blocked. Go to <strong>Settings → Execution History &amp; Storage</strong> and delete some records to free space.</p>
           </div>
-        )}
-      </Card>
+        </div>
+      )}
+      {!isGuest && storageUsedBytes >= STORAGE_CAP_BYTES * 0.8 && storageUsedBytes < STORAGE_CAP_BYTES && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-yellow-500/50 bg-yellow-500/10 text-sm">
+          <span className="text-yellow-600 dark:text-yellow-400 font-bold mt-0.5">⚠</span>
+          <div>
+            <p className="font-semibold text-yellow-700 dark:text-yellow-300">Execution history storage is almost full ({(storageUsedBytes / 1_048_576).toFixed(1)} MB / 50 MB)</p>
+            <p className="text-yellow-600/80 dark:text-yellow-400/80 text-xs mt-0.5">Go to <strong>Settings → Execution History &amp; Storage</strong> to free space before your limit is reached.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        {statCards.map(({ label, value, icon: Icon }, i) => (
+          <Card key={i} className="p-5 hover:shadow-lg hover:scale-[1.02] transition-all duration-200 shadow">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-muted-foreground text-sm font-medium">{label}</p>
+              <Icon className="text-primary" size={22} />
+            </div>
+            <p className={`text-3xl font-bold text-foreground ${flashStats ? "stat-value-flash" : ""}`}>{value}</p>
+            <p className="text-xs text-primary mt-1">Last {timeRange}</p>
+          </Card>
+        ))}
+      </div>
+
+      {/* Scenario Comparison Cards */}
+      {allRows.length >= 2 && (
+        <div>
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Scenario Comparison</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Baseline vs latest */}
+            {(() => {
+              const done = allRows.filter((r) => r.status === "completed" || r.status === "saved")
+              const baseline = done[done.length - 1] // oldest completed
+              const latest   = done[0]               // newest completed
+              if (!baseline || !latest || baseline.id === latest.id) return null
+              const runtimeDelta = latest.runtime_ms && baseline.runtime_ms
+                ? ((latest.runtime_ms - baseline.runtime_ms) / baseline.runtime_ms * 100).toFixed(1)
+                : null
+              const reliabilityDelta = latest.success_rate && baseline.success_rate
+                ? (latest.success_rate - baseline.success_rate).toFixed(1)
+                : null
+              return (
+                <>
+                  <Card className="p-4 shadow border border-border bg-secondary/30">
+                    <p className="text-xs text-muted-foreground mb-1 font-medium uppercase tracking-wide">Best Scenario</p>
+                    <p className="text-sm font-semibold text-foreground truncate">{latest.circuit_name || latest.algorithm || "Latest simulation"}</p>
+                    <p className="text-2xl font-bold text-primary mt-1">{latest.success_rate?.toFixed(1) ?? "—"}%</p>
+                    <p className="text-xs text-muted-foreground mt-1">reliability · {latest.backend_selected?.replace("quantum_inspired_gpu","QI-GPU").replace("hpc_gpu","HPC").replace("quantum_qpu","QPU") ?? "—"}</p>
+                  </Card>
+                  <Card className="p-4 shadow border border-border bg-secondary/30">
+                    <p className="text-xs text-muted-foreground mb-1 font-medium uppercase tracking-wide">Simulation Time Δ</p>
+                    <p className="text-2xl font-bold mt-1" style={{ color: runtimeDelta && Number(runtimeDelta) < 0 ? "#578e7e" : "#e07b54" }}>
+                      {runtimeDelta ? `${Number(runtimeDelta) > 0 ? "+" : ""}${runtimeDelta}%` : "—"}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">{baseline.runtime_ms ?? "—"}ms → {latest.runtime_ms ?? "—"}ms</p>
+                    <p className="text-xs text-muted-foreground">baseline → latest</p>
+                  </Card>
+                  <Card className="p-4 shadow border border-border bg-secondary/30">
+                    <p className="text-xs text-muted-foreground mb-1 font-medium uppercase tracking-wide">Reliability Δ</p>
+                    <p className="text-2xl font-bold mt-1" style={{ color: reliabilityDelta && Number(reliabilityDelta) > 0 ? "#578e7e" : "#e07b54" }}>
+                      {reliabilityDelta ? `${Number(reliabilityDelta) > 0 ? "+" : ""}${reliabilityDelta}pp` : "—"}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">{baseline.success_rate?.toFixed(1) ?? "—"}% → {latest.success_rate?.toFixed(1) ?? "—"}%</p>
+                    <p className="text-xs text-muted-foreground">baseline → latest</p>
+                  </Card>
+                </>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Tab bar: All + one per DT */}
+      <div className="flex items-center gap-1 flex-wrap">
+        <button
+          onClick={() => setActiveTab("all")}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            activeTab === "all"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+          }`}
+        >
+          All
+        </button>
+        {twins.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              activeTab === t.id
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+            }`}
+          >
+            {t.image_url && (
+              <img src={t.image_url} alt="" className="w-4 h-4 rounded-full object-cover" />
+            )}
+            {t.name}
+            <span className="text-[10px] opacity-70">
+              {allRows.filter((r) => r.digital_twin_id === t.id).length}
+            </span>
+          </button>
+        ))}
+        <Link href="/qsaas/runner">
+          <Button size="sm" className="ml-auto bg-primary hover:bg-primary/90 text-xs">
+            + New Simulation
+          </Button>
+        </Link>
+      </div>
+
+      {/* ── Scenario & Batch table ──────────────────────────────────────────── */}
+      {allRows.length > 0 && (() => {
+        // Build scenario groups from rows (group by scenario_name + scenario_type, or batch_id)
+        const grouped = new Map<string, typeof allRows>()
+        for (const row of allRows) {
+          const key = row.batch_id || row.scenario_name || "unclassified"
+          const arr = grouped.get(key) || []
+          arr.push(row)
+          grouped.set(key, arr)
+        }
+        const entries = Array.from(grouped.entries())
+          .sort(([, a], [, b]) => new Date(b[0].created_at).getTime() - new Date(a[0].created_at).getTime())
+          .slice(0, 20)
+        const routeLabel = (r: string | null) =>
+          r === "quantum_inspired_gpu" ? "QI-GPU"
+          : r === "hpc_gpu" ? "HPC"
+          : r === "quantum_qpu" ? "QPU"
+          : r || "—"
+        return (
+          <div>
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Scenario Overview</h3>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-xs">
+                <thead className="bg-secondary/50">
+                  <tr className="text-muted-foreground text-left">
+                    <th className="px-3 py-2 font-medium">Scenario</th>
+                    <th className="px-3 py-2 font-medium">Type</th>
+                    <th className="px-3 py-2 font-medium">Objective</th>
+                    <th className="px-3 py-2 font-medium">Risk</th>
+                    <th className="px-3 py-2 font-medium">Compute Route</th>
+                    <th className="px-3 py-2 font-medium">Runs</th>
+                    <th className="px-3 py-2 font-medium">Avg Reliability</th>
+                    <th className="px-3 py-2 font-medium">Avg Runtime</th>
+                    <th className="px-3 py-2 font-medium">Best Run</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map(([key, rows]) => {
+                    const completed = rows.filter((r) => r.status === "completed" || r.status === "saved")
+                    const n = completed.length
+                    const avgSuccess = n > 0 ? completed.reduce((s, r) => s + (r.success_rate || 0), 0) / n : 0
+                    const avgRuntime = n > 0 ? completed.reduce((s, r) => s + (r.runtime_ms || 0), 0) / n : 0
+                    const best = completed.reduce((a, b) => (b.success_rate > a.success_rate ? b : a), completed[0])
+                    const rep = rows[0]  // representative row
+                    const isUnclassified = key === "unclassified"
+                    const objective = (rep.objective || "—").replace("_", " ")
+                    const risk = rep.risk_tolerance || (isUnclassified ? "—" : "balanced")
+                    const route = routeLabel(rep.backend_selected)
+                    const scenLabel = isUnclassified
+                      ? "Unclassified simulations"
+                      : rep.scenario_name || rep.batch_id?.slice(0, 16) || key.slice(0, 24)
+                    return (
+                      <tr key={key} className="border-t border-border hover:bg-secondary/20 transition-colors">
+                        <td className="px-3 py-2 text-foreground font-medium max-w-[160px] truncate">
+                          {scenLabel}
+                          {isUnclassified && <span className="ml-1 text-[10px] text-muted-foreground">(legacy)</span>}
+                        </td>
+                        <td className="px-3 py-2 text-muted-foreground">{rep.scenario_type || "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground capitalize">{objective}</td>
+                        <td className="px-3 py-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            risk === "conservative" ? "bg-blue-500/15 text-blue-400"
+                            : risk === "aggressive" ? "bg-orange-500/15 text-orange-400"
+                            : risk === "—" ? "text-muted-foreground" : "bg-secondary text-muted-foreground"
+                          }`}>
+                            {capitalize(risk)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-muted-foreground">{route}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{rows.length}</td>
+                        <td className="px-3 py-2 font-semibold" style={{ color: "#7ab5ac" }}>{n > 0 ? `${avgSuccess.toFixed(1)}%` : "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{n > 0 ? `${Math.round(avgRuntime)}ms` : "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{best ? `${best.success_rate?.toFixed(1)}%` : "—"}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Active tab content — Simulation History */}
+      {!loading && <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Simulation History</h3>}
+      {loading ? (
+        <p className="text-muted-foreground text-sm py-12 text-center">Loading…</p>
+      ) : (
+      <DigitalTwinDashboard
+          key={activeTab}
+          initialRows={rowsForTab}
+          liveEnabled={false}
+          apiKey={null}
+          digitalTwinId={activeTab === "all" ? null : activeTab}
+          title={activeTab === "all" ? "All Digital Twins" : (activeTwin?.name ?? activeTab)}
+          timeRange={timeRange}
+        />
+      )}
     </div>
   )
 }
 
+function capitalize(s: string) {
+  if (!s || s === "—") return s
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}

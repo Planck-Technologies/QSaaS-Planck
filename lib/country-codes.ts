@@ -33,4 +33,3 @@ export function getCountryCode(country: string): string {
   const found = COUNTRY_CODES.find((c) => c.country === country)
   return found?.code || "+1"
 }
-

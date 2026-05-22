@@ -2,6 +2,8 @@ export const QUANTUM_TEMPLATES = [
   {
     id: "bell-state",
     name: "Bell",
+    useCaseLabel: "entanglement / baseline test",
+    domain: "Foundational",
     description: "Create an entangled quantum state for system interconectivity and secure communication.",
     shortDescription: "Create an entangled quantum state for system interconectivity and secure communication",
     minQubits: 2,
@@ -12,6 +14,8 @@ export const QUANTUM_TEMPLATES = [
   {
     id: "grovers",
     name: "Grover",
+    useCaseLabel: "search / matching",
+    domain: "Search & Retrieval",
     description: "Search unsorted databases for pattern matching and unstructured search problems.",
     shortDescription: "Search unsorted databases for pattern matching and unstructured search problems",
     minQubits: 8,
@@ -22,6 +26,8 @@ export const QUANTUM_TEMPLATES = [
   {
     id: "shors",
     name: "Shor",
+    useCaseLabel: "factorization / cryptographic demo",
+    domain: "Cryptography",
     description: "Factor large numbers for cryptanalysis and number theory research applications.",
     shortDescription: "Factor large numbers for cryptanalysis and number theory research applications",
     minQubits: 16,
@@ -32,6 +38,8 @@ export const QUANTUM_TEMPLATES = [
   {
     id: "vqe",
     name: "VQE",
+    useCaseLabel: "optimization / energy landscape",
+    domain: "Optimization",
     description: "Variational Quantum Eigensolver for finding ground state energies and optimization.",
     shortDescription: "Variational Quantum Eigensolver for finding ground state energies and optimization",
     minQubits: 12,
@@ -42,11 +50,25 @@ export const QUANTUM_TEMPLATES = [
   {
     id: "qaoa",
     name: "QAOA",
+    useCaseLabel: "combinatorial optimization",
+    domain: "Optimization",
     description: "Quantum Approximate Optimization for combinatorial optimization and constraint satisfaction.",
     shortDescription: "Quantum Approximate Optimization for combinatorial optimization and constraint satisfaction",
     minQubits: 10,
     difficulty: "Intermediate",
     icon: "/images/qaoa-20icon-20planck.png",
+    format: "QASM",
+  },
+  {
+    id: "qft",
+    name: "QFT",
+    useCaseLabel: "signal / periodicity",
+    domain: "Signal Processing",
+    description: "Quantum Fourier Transform for phase estimation, signal processing and quantum arithmetic.",
+    shortDescription: "Quantum Fourier Transform for phase estimation, signal processing and quantum arithmetic",
+    minQubits: 4,
+    difficulty: "Intermediate",
+    icon: "/images/qft-20icon-20planck.png",
     format: "QASM",
   },
 ]
@@ -87,4 +109,3 @@ export const PRICING_PLANS = [
     runs: null,
   },
 ]
-

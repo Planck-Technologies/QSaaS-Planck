@@ -1,24 +1,83 @@
 import { type NextRequest, NextResponse } from "next/server"
-
-// SECURITY: Proprietary imports removed
+import { CppMLEngine } from "@/lib/ml/cpp-ml-engine"
+// Removed Supabase imports
+import { authenticateRequest } from "@/lib/api-auth"
+import {
+  validateAlgorithm,
+  validateQubits,
+  validateDepth,
+  validateGateCount,
+  validateNumber,
+  createSafeErrorResponse,
+  validateRequestHeaders,
+} from "@/lib/security"
 
 export async function POST(request: NextRequest) {
   try {
+    // Validate request headers
+    const headerValidation = validateRequestHeaders(request.headers)
+    if (!headerValidation.valid) {
+      return NextResponse.json(
+        { success: false, error: headerValidation.error },
+        { status: 403 }
+      )
+    }
+
     const body = await request.json()
     
-    // DEMO MODE: ML recommendation engine has been removed for security
+    // Validate and sanitize inputs
+    const qubits = validateQubits(body.qubits)
+    const depth = validateDepth(body.depth)
+    const gateCount = validateGateCount(body.gateCount)
+    const algorithm = validateAlgorithm(body.algorithm)
+    const dataSize = validateNumber(body.dataSize, 1, 100000, 100)
+    const dataComplexity = validateNumber(body.dataComplexity, 0, 10, 1)
+    const targetLatency = validateNumber(body.targetLatency, 0, 60000, 1000)
+    const errorMitigation = body.errorMitigation || "medium"
+
+    // Authenticate (API-key via service-role or session cookie)
+    const auth = await authenticateRequest(request)
+    if (!auth.ok) {
+      return NextResponse.json(
+        { success: false, error: auth.error },
+        { status: auth.status }
+      )
+    }
+    const userId = auth.userId!
+
+    // Use admin client for SDK requests to bypass RLS
+    // Supabase logic removed; use internal DB logic here
+
+    let userHistoricalAccuracy = 0.5
+    // ML history lookup disabled (no Supabase). Using default accuracy.
+
+    const recommendation = await CppMLEngine.getRecommendation({
+      qubits,
+      depth,
+      gateCount,
+      algorithm,
+      dataSize,
+      dataComplexity,
+      targetLatency,
+      errorMitigation,
+      userHistoricalAccuracy,
+    })
+
     return NextResponse.json({
       success: true,
-      demo: true,
-      message: "ML recommendation endpoint (demo mode only)",
-      recommendedShots: 1024,
-      recommendedBackend: "demo_backend",
-      confidence: 0,
-      reasoning: "Demo mode - machine learning integration has been removed",
-      basedOnExecutions: 0,
+      recommendedShots: recommendation.recommendedShots,
+      recommendedBackend: recommendation.recommendedBackend,
+      recommendedErrorMitigation: recommendation.recommendedErrorMitigation,
+      confidence: recommendation.confidence,
+      reasoning: recommendation.reasoning,
+      basedOnExecutions: recommendation.basedOnExecutions,
     })
   } catch (error) {
-    return NextResponse.json({ success: false, error: "Demo endpoint" }, { status: 500 })
+    const safeError = createSafeErrorResponse(error, "Failed to get ML recommendation")
+    console.error("[API] ML recommendation error:", error)
+    return NextResponse.json(
+      { success: false, error: safeError },
+      { status: 500 }
+    )
   }
 }
-
